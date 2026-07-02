@@ -2,11 +2,15 @@ name: 公开仓安全检查
 on:
   push:
   pull_request:
+permissions:
+  contents: read
 jobs:
   safety:
     runs-on: ubuntu-latest
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: 检查禁入文件和敏感特征
         run: python3 scripts/check-public-safety.py

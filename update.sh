@@ -24,6 +24,71 @@ if [ ! -d "$DATA_REPO/.git" ]; then
   exit 1
 fi
 
+REMOTE=$(git -C "$DATA_REPO" remote get-url origin 2>/dev/null || echo "")
+BRANCH=$(git -C "$DATA_REPO" branch --show-current)
+if [ -z "$REMOTE" ] || [ -z "$BRANCH" ]; then
+  echo "  ! 私有数据仓缺少 origin 或当前分支，已停止。"
+  exit 1
+fi
+
+case "$REMOTE" in
+  https://github.com/*) DATA_REPO_SLUG=${REMOTE#https://github.com/} ;;
+  git@github.com:*) DATA_REPO_SLUG=${REMOTE#git@github.com:} ;;
+  ssh://git@github.com/*) DATA_REPO_SLUG=${REMOTE#ssh://git@github.com/} ;;
+  *)
+    echo "  ! 数据仓 origin 不是受支持的 GitHub 地址: $REMOTE"
+    exit 1
+    ;;
+esac
+DATA_REPO_SLUG=${DATA_REPO_SLUG%.git}
+if [ "${DATA_REPO_SLUG##*/}" != "ai-token-dashboard-data" ]; then
+  echo "  ! 数据仓名称不是 ai-token-dashboard-data，已停止。"
+  echo "    当前: $DATA_REPO_SLUG"
+  exit 1
+fi
+EXPECTED_DATA_REPO_SLUG=${AI_TOKEN_DATA_REPO_EXPECTED_SLUG:-}
+if [ -z "$EXPECTED_DATA_REPO_SLUG" ]; then
+  CODE_REMOTE=$(git remote get-url origin 2>/dev/null || echo "")
+  case "$CODE_REMOTE" in
+    https://github.com/*) CODE_REPO_SLUG=${CODE_REMOTE#https://github.com/} ;;
+    git@github.com:*) CODE_REPO_SLUG=${CODE_REMOTE#git@github.com:} ;;
+    ssh://git@github.com/*) CODE_REPO_SLUG=${CODE_REMOTE#ssh://git@github.com/} ;;
+    *) CODE_REPO_SLUG="" ;;
+  esac
+  CODE_REPO_SLUG=${CODE_REPO_SLUG%.git}
+  if [ -n "$CODE_REPO_SLUG" ] && [ "${CODE_REPO_SLUG##*/}" = "ai-token-dashboard" ]; then
+    EXPECTED_DATA_REPO_SLUG="${CODE_REPO_SLUG%/*}/ai-token-dashboard-data"
+  fi
+fi
+if [ -z "$EXPECTED_DATA_REPO_SLUG" ]; then
+  echo "  ! 无法从公开仓 origin 推导私有数据仓身份。"
+  echo "    请设置 AI_TOKEN_DATA_REPO_EXPECTED_SLUG，例如 owner/ai-token-dashboard-data。"
+  exit 1
+fi
+if [ "$DATA_REPO_SLUG" != "$EXPECTED_DATA_REPO_SLUG" ]; then
+  echo "  ! 数据仓身份不匹配，已停止。"
+  echo "    预期: $EXPECTED_DATA_REPO_SLUG"
+  echo "    当前: $DATA_REPO_SLUG"
+  exit 1
+fi
+if ! command -v gh >/dev/null 2>&1; then
+  echo "  ! 缺少 GitHub CLI（gh），无法验证数据仓可见性，已停止。"
+  exit 1
+fi
+if ! VISIBILITY=$(gh repo view "$DATA_REPO_SLUG" --json visibility --jq '.visibility' 2>/dev/null); then
+  echo "  ! 无法验证数据仓可见性。请先运行 gh auth status，确认已登录。"
+  exit 1
+fi
+if [ "$VISIBILITY" != "PRIVATE" ]; then
+  echo "  ! 数据仓不是 Private，已停止，绝不写入或推送真实数据。"
+  exit 1
+fi
+if ! git -C "$DATA_REPO" diff --cached --quiet; then
+  echo "  ! 私有数据仓已有暂存内容，已停止，避免混入本次设备数据："
+  git -C "$DATA_REPO" diff --cached --name-status
+  exit 1
+fi
+
 if [ -d .git ] && git remote get-url origin >/dev/null 2>&1; then
   echo "==> 拉取公开代码仓..."
   git pull --ff-only
@@ -37,13 +102,6 @@ python3 "$CODE_REPO/scan.py"
 
 echo ""
 echo "==> 检查私有数据仓..."
-REMOTE=$(git -C "$DATA_REPO" remote get-url origin 2>/dev/null || echo "")
-BRANCH=$(git -C "$DATA_REPO" branch --show-current)
-if [ -z "$REMOTE" ]; then
-  echo "  ! 私有数据仓没有 origin，无法推送。"
-  exit 1
-fi
-
 DEVICE_NAME=${AI_TOKEN_DEVICE:-$(python3 -c "import socket; print(socket.gethostname().split('.')[0])")}
 SAFE_DEVICE_NAME=$(DEVICE_NAME="$DEVICE_NAME" python3 -c 'import os; dev=os.environ["DEVICE_NAME"]; safe="".join(c if c.isalnum() or c in "-_." else "_" for c in dev).strip("._"); print(safe or "device")')
 DEVICE_DATA="data/设备-${SAFE_DEVICE_NAME}.json"
@@ -56,6 +114,12 @@ git -C "$DATA_REPO" add "$DEVICE_DATA"
 if git -C "$DATA_REPO" diff --cached --quiet; then
   echo "  没有变更，跳过 commit"
   exit 0
+fi
+STAGED_FILES=$(git -C "$DATA_REPO" diff --cached --name-only)
+if [ "$STAGED_FILES" != "$DEVICE_DATA" ]; then
+  echo "  ! 暂存区不只包含本机设备数据，已停止："
+  git -C "$DATA_REPO" diff --cached --name-status
+  exit 1
 fi
 
 echo ""
@@ -109,11 +173,12 @@ fi
 echo ""
 read -r -p "确认提交并推送以上私有数据？请输入“推送”：" CONFIRM
 if [ "$CONFIRM" != "推送" ]; then
-  echo "  已取消，暂存内容仍保留在私有数据仓。"
+  git -C "$DATA_REPO" restore --staged -- "$DEVICE_DATA"
+  echo "  已取消并取消暂存；数据文件修改仍保留在本机。"
   exit 0
 fi
 
 DATE=$(date "+%Y-%m-%d %H:%M")
-git -C "$DATA_REPO" commit -m "更新设备数据 $DEVICE_NAME $DATE"
+git -C "$DATA_REPO" commit -m "更新设备数据 $DEVICE_NAME $DATE" -- "$DEVICE_DATA"
 git -C "$DATA_REPO" push origin "$BRANCH"
 echo "  ✓ 已推送到 $REMOTE"

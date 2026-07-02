@@ -26,14 +26,14 @@ AI/
 {"data_repo": "你的私有数据仓绝对路径"}
 ```
 
-需要更新私有数据仓时运行 `./update.sh`。脚本只暂存本机设备数据，展示远端、分支和差异并完成安全检查；只有人工输入“推送”后才会提交并推送。
+需要更新私有数据仓时，先安装并登录 GitHub CLI（`gh`），再运行 `./update.sh`。脚本会从公开仓 `origin` 推导同一账号下的 `ai-token-dashboard-data`，并强制确认它是 Private；如需使用不同账号，可显式设置 `AI_TOKEN_DATA_REPO_EXPECTED_SLUG=owner/ai-token-dashboard-data`。脚本还会拒绝已有暂存内容，并只允许提交本机设备数据。只有人工输入“推送”后才会提交并推送。
 
 ## 隐私边界
 
 - 扫描器只汇总用量字段，不保存或上传对话正文。
 - 项目名使用私有共享种子生成稳定代号；原名对照表只留在本机。
 - `data.js`、本机配置、项目映射、共享种子和 `data/` 已被公开仓忽略。
-- `scripts/check-public-safety.py` 检查禁入文件、凭据特征、本机绝对路径、意外大文件和二进制文件。
+- `scripts/check-public-safety.py` 检查当前文件和完整 Git 历史中的禁入文件、凭据特征、本机绝对路径、意外大文件和二进制内容。
 - GitHub Actions 会在公开仓的提交和拉取请求中重复执行检查。
 
 本项目采用 [MIT License](LICENSE)。

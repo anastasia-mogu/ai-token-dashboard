@@ -12,13 +12,17 @@ MAX_SIZE = 1024 * 1024
 BINARY_SUFFIXES = {".zip", ".sqlite", ".db", ".mp4", ".mov"}
 FORBIDDEN_NAMES = {"data.js", ".project-hash-seed", ".project-aliases.json", ".env"}
 
+def forbidden_path(rel: str, path: Path) -> bool:
+    return path.name in FORBIDDEN_NAMES or path.name.startswith(".env.") or rel.startswith("data/")
+
 def candidate_files() -> list[Path]:
     if (ROOT / ".git").exists():
         result = subprocess.run(
             ["git", "-C", str(ROOT), "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
             check=True, capture_output=True,
         )
-        return [ROOT / name.decode() for name in result.stdout.split(b"\0") if name]
+        paths = [ROOT / name.decode() for name in result.stdout.split(b"\0") if name]
+        return [path for path in paths if path.exists() or path.is_symlink()]
     return [path for path in ROOT.rglob("*") if path.is_file() and ".git" not in path.parts]
 
 def risky_patterns() -> list[re.Pattern[str]]:
@@ -30,25 +34,89 @@ def risky_patterns() -> list[re.Pattern[str]]:
     ]
     return [re.compile(part, re.IGNORECASE) for part in parts]
 
+def scan_text(rel: str, text: str, failures: list[tuple[str, int | None, str]], prefix: str = "") -> None:
+    path = Path(rel)
+    for number, line in enumerate(text.splitlines(), 1):
+        detector_rule = path.name == "update.sh" and line.lstrip().startswith(("SENSITIVE_PATTERN=", "TOKEN_PATTERN="))
+        if not detector_rule and any(pattern.search(line) for pattern in risky_patterns()):
+            failures.append((prefix + rel, number, "疑似凭据或本机绝对路径"))
+
+def scan_history(failures: list[tuple[str, int | None, str]]) -> None:
+    if not (ROOT / ".git").exists():
+        return
+    seen: set[tuple[str, str]] = set()
+    commits = subprocess.run(
+        ["git", "-C", str(ROOT), "rev-list", "--all"],
+        check=True, capture_output=True, text=True,
+    ).stdout.splitlines()
+    for commit in commits:
+        tree = subprocess.run(
+            ["git", "-C", str(ROOT), "ls-tree", "-rl", "-z", commit],
+            check=True, capture_output=True,
+        ).stdout
+        for entry in tree.split(b"\0"):
+            if not entry:
+                continue
+            metadata, raw_path = entry.split(b"\t", 1)
+            _mode, kind, object_id, raw_size = metadata.decode("ascii").split()
+            if kind != "blob":
+                continue
+            try:
+                rel = raw_path.decode("utf-8")
+            except UnicodeDecodeError:
+                failures.append(("历史:<非 UTF-8 路径>", None, "公开仓历史含非 UTF-8 路径"))
+                continue
+            if (object_id, rel) in seen:
+                continue
+            seen.add((object_id, rel))
+            path = Path(rel)
+            location = f"历史:{rel}"
+            if forbidden_path(rel, path):
+                failures.append((location, None, "公开仓历史含禁入文件"))
+            if path.suffix.lower() in BINARY_SUFFIXES:
+                failures.append((location, None, "公开仓历史含禁止的二进制文件"))
+            if int(raw_size) > MAX_SIZE:
+                failures.append((location, None, "公开仓历史含超过 1 MB 的文件"))
+            content = subprocess.run(
+                ["git", "-C", str(ROOT), "cat-file", "blob", object_id],
+                check=True, capture_output=True,
+            ).stdout
+            if b"\0" in content:
+                failures.append((location, None, "公开仓历史含未识别二进制内容"))
+                continue
+            try:
+                text = content.decode("utf-8")
+            except UnicodeDecodeError:
+                failures.append((location, None, "公开仓历史含非 UTF-8 内容"))
+                continue
+            scan_text(rel, text, failures, prefix="历史:")
+
 def main() -> int:
     failures: list[tuple[str, int | None, str]] = []
     files = candidate_files()
     for path in files:
         rel = path.relative_to(ROOT).as_posix()
-        if path.name in FORBIDDEN_NAMES or path.name.startswith(".env.") or rel.startswith("data/"):
+        if path.is_symlink():
+            failures.append((rel, None, "公开仓不允许符号链接"))
+            continue
+        if forbidden_path(rel, path):
             failures.append((rel, None, "公开仓禁入文件"))
         if path.suffix.lower() in BINARY_SUFFIXES:
             failures.append((rel, None, "禁止的二进制文件"))
         if path.stat().st_size > MAX_SIZE:
             failures.append((rel, None, "文件超过 1 MB"))
-        try:
-            text = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
+        content = path.read_bytes()
+        if b"\0" in content:
+            failures.append((rel, None, "未识别的二进制内容"))
             continue
-        for number, line in enumerate(text.splitlines(), 1):
-            detector_rule = path.name == "update.sh" and line.lstrip().startswith(("SENSITIVE_PATTERN=", "TOKEN_PATTERN="))
-            if not detector_rule and any(pattern.search(line) for pattern in risky_patterns()):
-                failures.append((rel, number, "疑似凭据或本机绝对路径"))
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            failures.append((rel, None, "非 UTF-8 内容"))
+            continue
+        scan_text(rel, text, failures)
+
+    scan_history(failures)
 
     configured = os.environ.get("AI_TOKEN_PUBLIC_EXTRA_PATTERNS_FILE")
     pattern_path = Path(configured).expanduser() if configured else ROOT / ".public-safety-patterns.local"
@@ -73,7 +141,7 @@ def main() -> int:
             location = rel + (f":{line}" if line else "")
             print(f"- {location}：{reason}")
         return 1
-    print(f"公开仓安全检查通过：已检查 {len(files)} 个文件。")
+    print(f"公开仓安全检查通过：已检查当前 {len(files)} 个文件及完整 Git 历史。")
     print("普通 Token 业务字段不作为凭据自动拦截；推送前仍需人工查看完整差异。")
     return 0
 
