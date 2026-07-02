@@ -1,0 +1,15 @@
+# 真实数据和本机配置绝不能进入公开仓
+/data.js
+/config.local.json
+/.project-aliases.json
+/.project-aliases.json.bak-*
+/.project-hash-seed
+/data/
+/.public-safety-patterns.local
+
+# 临时文件和缓存
+*.tmp
+*.bak-*
+__pycache__/
+*.pyc
+.DS_Store
