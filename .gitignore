@@ -5,6 +5,8 @@
 /.project-aliases.json.bak-*
 /.project-hash-seed
 /data/
+/.env
+/.env.*
 /.public-safety-patterns.local
 
 # 临时文件和缓存

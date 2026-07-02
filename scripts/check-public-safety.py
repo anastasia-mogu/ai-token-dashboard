@@ -35,7 +35,7 @@ def main() -> int:
     files = candidate_files()
     for path in files:
         rel = path.relative_to(ROOT).as_posix()
-        if path.name in FORBIDDEN_NAMES or rel.startswith("data/"):
+        if path.name in FORBIDDEN_NAMES or path.name.startswith(".env.") or rel.startswith("data/"):
             failures.append((rel, None, "公开仓禁入文件"))
         if path.suffix.lower() in BINARY_SUFFIXES:
             failures.append((rel, None, "禁止的二进制文件"))
