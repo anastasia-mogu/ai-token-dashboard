@@ -24,6 +24,10 @@ if [ ! -d "$DATA_REPO/.git" ]; then
   exit 1
 fi
 
+# 关闭 git 对非 ASCII 文件名的转义,不然 "data/设备-xxx.json" 在 diff --name-only 里会变成 "data/\350\256\276\..."
+# 影响脚本里 STAGED_FILES 检查和二进制文件正则比较
+git -C "$DATA_REPO" config core.quotepath false >/dev/null
+
 REMOTE=$(git -C "$DATA_REPO" remote get-url origin 2>/dev/null || echo "")
 BRANCH=$(git -C "$DATA_REPO" branch --show-current)
 if [ -z "$REMOTE" ] || [ -z "$BRANCH" ]; then
