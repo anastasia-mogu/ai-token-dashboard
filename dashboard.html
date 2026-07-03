@@ -661,12 +661,10 @@ function pollForUpdates(initialFingerprint) {
 // 像素风:太阳蘑菇 40px 步进走近 → 歪头靠拢 → 桃心冒出;地面既是虚线路径也是实线进度条。
 // 动画约 4 秒走完;若数据未到,桃心循环冒出等数据(每 2 秒一轮)。
 // 测试用:URL 加 ?loader=demo 强制展示 loader,demo 模式下 3 秒后自动放行。
-// 测试用:URL 加 ?loader=demo 或 sessionStorage.loaderDemo=1 强制展示 loader,demo 模式下 3 秒后自动放行。
+// 测试用:URL 加 ?loader=demo/#demo/#loader-demo,或 sessionStorage.loaderDemo=1 → demo 模式(不等真实数据到达,3s 后放行)。
+// 每次打开都展示 loader,期间后台跑 refresh-data.sh 拉新数据,数据到达后进仪表盘。
 function shouldShowLoader(devices) {
-  if (isLoaderDemo()) return true;
-  if (window.AI_TOKEN_DATA_IS_EXAMPLE) return true;
-  if (!devices || devices.length === 0) return true;
-  return false;
+  return true;
 }
 function isLoaderDemo() {
   const params = new URLSearchParams(location.search);
@@ -824,19 +822,19 @@ function playLoader(dataArrivedPromise) {
     return;
   }
 
-  // 首次打开或只有示例数据:先播加载动画,同时轮询等真实数据到达
-  // 数据到达指:检测到 window.AI_TOKEN_DATA_IS_EXAMPLE 为 false 且有内容,或已有真实数据的 fingerprint 变化
-  // demo 模式下:3 秒后强制 resolve,不等真实数据(方便看动画)
+  // 每次打开都播加载动画,期间后台跑 refresh-data.sh 拉新数据。
+  // "数据到达"指:轮询检测到 data.js 的 scanned_at 变了(scan.py 跑完了)。
+  // demo 模式:3s 后强制放行,不等 refresh-data。
+  // 兜底:15s 内 fingerprint 都没变,也放行(避免 scan 失败干等)。
   const initialFingerprint = scanFingerprint(devices || []);
   const dataArrivedPromise = new Promise(resolveArrived => {
     if (isLoaderDemo()) {
       setTimeout(resolveArrived, 3000);
       return;
     }
-    const MAX_ATTEMPTS = 30;
+    const MAX_ATTEMPTS = 30;    // 30 * 500ms = 15s 兜底
     const INTERVAL_MS = 500;
     let attempts = 0;
-    // 如果 15 秒都没等到真实数据,也让加载页放行(至少能看到示例数据/空提示)
     const timer = setInterval(() => {
       attempts += 1;
       if (attempts > MAX_ATTEMPTS) { clearInterval(timer); resolveArrived(); return; }
@@ -845,9 +843,14 @@ function playLoader(dataArrivedPromise) {
       script.onload = () => {
         script.remove();
         const now = window.AI_TOKEN_DATA;
-        const isReal = !window.AI_TOKEN_DATA_IS_EXAMPLE && now && now.length > 0;
-        const fingerprintChanged = scanFingerprint(now || []) !== initialFingerprint;
-        if (isReal && (fingerprintChanged || !devices || devices.length === 0)) {
+        const hasData = !window.AI_TOKEN_DATA_IS_EXAMPLE && now && now.length > 0;
+        // 无数据(纯首次) → 有数据即算到达
+        // 有数据 → fingerprint 变化才算到达(scan 跑完了)
+        const arrived = hasData && (
+          !devices || devices.length === 0 ||
+          scanFingerprint(now) !== initialFingerprint
+        );
+        if (arrived) {
           clearInterval(timer);
           resolveArrived();
         }
