@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <title>AI Token 仪表盘</title>
 <script src="vendor/chart.umd.min.js"></script>
+<script src="vendor/gsap.min.js"></script>
 <script src="data.example.js"></script>
 <script src="data.js"></script>
 <style>
@@ -192,9 +193,107 @@
     .stat-card--hero .stat-value { font-size: clamp(62px, 22vw, 104px); }
     .chart-wrap, .bottom .chart-wrap { height: 280px; }
   }
+
+  /* 加载页:全屏黑底,首次打开才显示,加载完毕渐隐 */
+  /* 像素风:太阳蘑菇 40px 步进走近 → 歪头靠拢 → 桃心冒出;地面既是虚线路径也是实线进度条 */
+  .loader[hidden] { display: none !important; }
+  .loader {
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 32px;
+  }
+  .loader-scene {
+    position: relative;
+    width: 360px;
+    max-width: 90vw;
+    height: 90px;
+    /* 底部虚线地面(未走过) */
+    background-image: repeating-linear-gradient(
+      to right,
+      #7a9a1c 0, #7a9a1c 4px, transparent 4px, transparent 8px
+    );
+    background-size: 100% 3px;
+    background-position: bottom;
+    background-repeat: no-repeat;
+  }
+  .loader-ground-fill {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    height: 3px;
+    width: 0%;
+    background: var(--accent);
+    box-shadow: 0 0 6px rgba(216, 255, 62, 0.6);
+  }
+  .loader-char {
+    position: absolute;
+    bottom: 15px;
+    width: 40px;
+    height: 40px;
+    image-rendering: pixelated;
+    -ms-interpolation-mode: nearest-neighbor;
+  }
+  .loader-char img {
+    width: 100%;
+    height: 100%;
+    display: block;
+    image-rendering: pixelated;
+  }
+  .loader-sun { left: 0; }
+  .loader-mushroom { right: 0; }
+  .loader-hearts {
+    position: absolute;
+    left: 50%;
+    bottom: 55px;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 8px;
+    pointer-events: none;
+  }
+  .loader-heart {
+    width: 16px;
+    height: 14px;
+    opacity: 0;
+  }
+  .loader-caption {
+    color: var(--muted);
+    font-size: 12px;
+    letter-spacing: 0.15em;
+    font-family: monospace;
+  }
 </style>
 </head>
 <body>
+<div class="loader" id="loader" hidden>
+  <div class="loader-scene" id="loaderScene">
+    <div class="loader-char loader-sun" id="loaderSun">
+      <img src="assets/loader/sun-1.svg" alt="" id="loaderSunImg">
+    </div>
+    <div class="loader-char loader-mushroom" id="loaderMushroom">
+      <img src="assets/loader/mushroom-1.svg" alt="" id="loaderMushroomImg">
+    </div>
+    <div class="loader-hearts" id="loaderHearts">
+      <svg class="loader-heart" viewBox="0 0 8 7" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">
+        <path fill="#d8ff3e" d="M1 0h2v1H1z M5 0h2v1H5z M0 1h8v1H0z M0 2h8v1H0z M1 3h6v1H1z M2 4h4v1H2z M3 5h2v1H3z"/>
+      </svg>
+      <svg class="loader-heart" viewBox="0 0 8 7" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">
+        <path fill="#d8ff3e" d="M1 0h2v1H1z M5 0h2v1H5z M0 1h8v1H0z M0 2h8v1H0z M1 3h6v1H1z M2 4h4v1H2z M3 5h2v1H3z"/>
+      </svg>
+      <svg class="loader-heart" viewBox="0 0 8 7" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">
+        <path fill="#d8ff3e" d="M1 0h2v1H1z M5 0h2v1H5z M0 1h8v1H0z M0 2h8v1H0z M1 3h6v1H1z M2 4h4v1H2z M3 5h2v1H3z"/>
+      </svg>
+    </div>
+    <div class="loader-ground-fill" id="loaderFill"></div>
+  </div>
+  <div class="loader-caption" id="loaderCaption">LOADING...</div>
+</div>
+
 <header class="topbar">
   <h1>AI Token 仪表盘</h1>
   <div class="subtitle" id="subtitle">加载中...</div>
@@ -557,15 +656,218 @@ function pollForUpdates(initialFingerprint) {
   }, INTERVAL_MS);
 }
 
+// ============ 加载页动画 ============
+// 只在"没有真实数据"时展示(首次打开/示例数据)。有真实旧数据就秒开仪表盘,后台悄悄轮询。
+// 像素风:太阳蘑菇 40px 步进走近 → 歪头靠拢 → 桃心冒出;地面既是虚线路径也是实线进度条。
+// 动画约 4 秒走完;若数据未到,桃心循环冒出等数据(每 2 秒一轮)。
+// 测试用:URL 加 ?loader=demo 强制展示 loader,demo 模式下 3 秒后自动放行。
+// 测试用:URL 加 ?loader=demo 或 sessionStorage.loaderDemo=1 强制展示 loader,demo 模式下 3 秒后自动放行。
+function shouldShowLoader(devices) {
+  if (isLoaderDemo()) return true;
+  if (window.AI_TOKEN_DATA_IS_EXAMPLE) return true;
+  if (!devices || devices.length === 0) return true;
+  return false;
+}
+function isLoaderDemo() {
+  const params = new URLSearchParams(location.search);
+  if (params.get('loader') === 'demo') return true;
+  try { if (sessionStorage.getItem('loaderDemo') === '1') return true; } catch (e) {}
+  if (location.hash === '#loader-demo' || location.hash === '#demo') return true;
+  return false;
+}
+
+// 步进走路 tween:x 步进移动 + y 弹跳(马里奥式跳着走)
+function loaderWalkTween(el, xTo, duration) {
+  const tl = gsap.timeline();
+  tl.to(el, { x: xTo, duration, ease: 'steps(8)' }, 0);
+  tl.to(el, { y: -6, duration: duration / 12, ease: 'none', yoyo: true, repeat: 11 }, 0);
+  return tl;
+}
+
+// 桃心冒出并飘走一次
+function loaderHeartsPop(heartEls, atTime, tl) {
+  tl.set(heartEls, { autoAlpha: 0, scale: 0, y: 0 }, atTime);
+  tl.to(heartEls, {
+    autoAlpha: 1, scale: 1, y: -12,
+    duration: 0.35, ease: 'back.out(2.5)', stagger: 0.08,
+  }, atTime + 0.05);
+  tl.to(heartEls, {
+    y: -32, autoAlpha: 0,
+    duration: 0.5, ease: 'sine.in', stagger: 0.05,
+  }, atTime + 0.6);
+}
+
+// 播放加载动画,返回 Promise<void>,resolve 时 loader 已完全淡出
+function playLoader(dataArrivedPromise) {
+  return new Promise(resolve => {
+    const loader = document.getElementById('loader');
+    loader.hidden = false;
+    const sunEl = document.getElementById('loaderSun');
+    const mushroomEl = document.getElementById('loaderMushroom');
+    const sunImg = document.getElementById('loaderSunImg');
+    const mushroomImg = document.getElementById('loaderMushroomImg');
+    const fillEl = document.getElementById('loaderFill');
+    const captionEl = document.getElementById('loaderCaption');
+    const heartEls = document.querySelectorAll('.loader-heart');
+
+    // 前置检查:如果 GSAP 没加载成功,直接跳过动画避免卡死
+    if (typeof gsap === 'undefined') {
+      console.error('[loader] GSAP 未加载,跳过动画');
+      captionEl.textContent = 'GSAP 未加载,跳过动画';
+      dataArrivedPromise.then(() => {
+        loader.hidden = true;
+        resolve();
+      });
+      return;
+    }
+
+    // 舞台 360px,角色 40px,相遇留 2px 间距 → 太阳向右 139px,蘑菇向左 139px
+    const TARGET_X = 139;
+
+    gsap.set([sunEl, mushroomEl], { x: 0, y: 0, scale: 1, rotation: 0 });
+    gsap.set(fillEl, { width: '0%' });
+    gsap.set(heartEls, { autoAlpha: 0, scale: 0, y: 0 });
+    sunImg.src = 'assets/loader/sun-1.svg';
+    mushroomImg.src = 'assets/loader/mushroom-1.svg';
+    captionEl.textContent = 'LOADING...';
+
+    const tl = gsap.timeline();
+
+    // 阶段 1(0-1.5s):走近一半
+    tl.add(loaderWalkTween(sunEl, TARGET_X * 0.5, 1.5), 0);
+    tl.add(loaderWalkTween(mushroomEl, -TARGET_X * 0.5, 1.5), 0);
+    tl.to(fillEl, { width: '40%', duration: 1.5, ease: 'steps(8)' }, 0);
+
+    // 阶段 2(1.5s):切好奇帧
+    tl.call(() => {
+      sunImg.src = 'assets/loader/sun-2.svg';
+      mushroomImg.src = 'assets/loader/mushroom-2.svg';
+    }, null, 1.5);
+
+    // 阶段 3(1.5-2.8s):走到最终位置(几乎挨着)
+    tl.add(loaderWalkTween(sunEl, TARGET_X, 1.3), 1.5);
+    tl.add(loaderWalkTween(mushroomEl, -TARGET_X, 1.3), 1.5);
+    tl.to(fillEl, { width: '90%', duration: 1.3, ease: 'steps(6)' }, 1.5);
+
+    // 阶段 4(2.8s):切兴奋 + 心跳 + 歪头靠一起 + 桃心冒出
+    tl.call(() => {
+      sunImg.src = 'assets/loader/sun-3.svg';
+      mushroomImg.src = 'assets/loader/mushroom-3.svg';
+    }, null, 2.8);
+    tl.to([sunEl, mushroomEl], {
+      scale: 1.15, duration: 0.15, ease: 'steps(2)',
+      yoyo: true, repeat: 1, transformOrigin: 'center bottom',
+    }, 2.8);
+    // 歪头:太阳右倾、蘑菇左倾,轴在脚下,只倾头
+    tl.to(sunEl, {
+      rotation: 15, duration: 0.4, ease: 'back.out(1.5)',
+      transformOrigin: 'center bottom',
+    }, 3.0);
+    tl.to(mushroomEl, {
+      rotation: -15, duration: 0.4, ease: 'back.out(1.5)',
+      transformOrigin: 'center bottom',
+    }, 3.0);
+    // 桃心第一轮
+    loaderHeartsPop(heartEls, 2.85, tl);
+
+    // 桃心循环冒出:动画走完后,如果数据还没到,每 2 秒再冒一轮
+    // 用一个标志位 + timer 双保险,防止循环在 loader 淡出后还继续操作 DOM
+    let heartLoopTimer = null;
+    let heartLoopStopped = false;
+    tl.call(() => {
+      if (heartLoopStopped) return;   // 数据已到 → 不再启动循环
+      heartLoopTimer = setInterval(() => {
+        if (heartLoopStopped) { clearInterval(heartLoopTimer); return; }
+        const loopTl = gsap.timeline();
+        loaderHeartsPop(heartEls, 0, loopTl);
+      }, 2000);
+    }, null, 4.0);
+
+    // 数据到达后:标志停止 → 清桃心循环 → 冲进度 100% → 完成 → 淡出
+    dataArrivedPromise.then(() => {
+      heartLoopStopped = true;
+      if (heartLoopTimer) { clearInterval(heartLoopTimer); heartLoopTimer = null; }
+      const elapsed = tl.time();
+      const wait = elapsed >= 3.9 ? 0 : (3.9 - elapsed) * 1000;
+      setTimeout(() => {
+        // 再清一次(保险起见)
+        heartLoopStopped = true;
+        if (heartLoopTimer) { clearInterval(heartLoopTimer); heartLoopTimer = null; }
+        gsap.to(fillEl, { width: '100%', duration: 0.4, ease: 'power2.out' });
+        captionEl.textContent = 'READY ✓';
+        gsap.to(loader, {
+          opacity: 0,
+          duration: 0.5,
+          delay: 0.5,
+          ease: 'power2.out',
+          onComplete: () => {
+            loader.hidden = true;
+            loader.style.opacity = '';
+            // 停所有还在跑的与 loader 相关的 GSAP 动画,防止残留
+            gsap.killTweensOf([sunEl, mushroomEl, fillEl, heartEls, loader]);
+            resolve();
+          }
+        });
+      }, wait);
+    });
+  });
+}
+
 (async () => {
   const devices = await loadAllDevices();
-  if (!devices || devices.length === 0) {
-    document.getElementById('subtitle').innerHTML =
-      '没找到数据。在终端跑一下 <code style="background:#1c1c18;color:#d8ff3e;padding:2px 6px">~/AI/ai-token-统计/update.sh</code>，然后刷新这个页面。';
+  const withLoader = shouldShowLoader(devices);
+
+  if (!withLoader) {
+    // 有真实旧数据:秒开仪表盘,后台悄悄轮询新数据
+    renderAll(devices);
+    pollForUpdates(scanFingerprint(devices));
     return;
   }
-  renderAll(devices);
-  pollForUpdates(scanFingerprint(devices));
+
+  // 首次打开或只有示例数据:先播加载动画,同时轮询等真实数据到达
+  // 数据到达指:检测到 window.AI_TOKEN_DATA_IS_EXAMPLE 为 false 且有内容,或已有真实数据的 fingerprint 变化
+  // demo 模式下:3 秒后强制 resolve,不等真实数据(方便看动画)
+  const initialFingerprint = scanFingerprint(devices || []);
+  const dataArrivedPromise = new Promise(resolveArrived => {
+    if (isLoaderDemo()) {
+      setTimeout(resolveArrived, 3000);
+      return;
+    }
+    const MAX_ATTEMPTS = 30;
+    const INTERVAL_MS = 500;
+    let attempts = 0;
+    // 如果 15 秒都没等到真实数据,也让加载页放行(至少能看到示例数据/空提示)
+    const timer = setInterval(() => {
+      attempts += 1;
+      if (attempts > MAX_ATTEMPTS) { clearInterval(timer); resolveArrived(); return; }
+      const script = document.createElement('script');
+      script.src = `data.js?t=${Date.now()}`;
+      script.onload = () => {
+        script.remove();
+        const now = window.AI_TOKEN_DATA;
+        const isReal = !window.AI_TOKEN_DATA_IS_EXAMPLE && now && now.length > 0;
+        const fingerprintChanged = scanFingerprint(now || []) !== initialFingerprint;
+        if (isReal && (fingerprintChanged || !devices || devices.length === 0)) {
+          clearInterval(timer);
+          resolveArrived();
+        }
+      };
+      script.onerror = () => script.remove();
+      document.head.appendChild(script);
+    }, INTERVAL_MS);
+  });
+
+  await playLoader(dataArrivedPromise);
+
+  // 加载页结束后,拿最新数据渲染
+  const finalDevices = window.AI_TOKEN_DATA || devices;
+  if (!finalDevices || finalDevices.length === 0) {
+    document.getElementById('subtitle').innerHTML =
+      '没找到数据。在终端跑一下 <code style="background:#1c1c18;color:#d8ff3e;padding:2px 6px">~/AI/ai-token-统计/update.sh</code>,然后刷新这个页面。';
+    return;
+  }
+  renderAll(finalDevices);
+  pollForUpdates(scanFingerprint(finalDevices));
 })();
 </script>
 </body>
