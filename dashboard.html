@@ -79,12 +79,26 @@
     line-height: 0.95;
     white-space: nowrap;
   }
+  .stat-value .unit {
+    font-family: var(--ui-font);
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    margin-left: 0.12em;
+    display: inline-block;
+    vertical-align: baseline;
+  }
+  .stat-value .unit-symbol { font-weight: 900; }
+  .stat-value .unit-symbol--cn {
+    font-family: "PingFang SC", "Helvetica Neue", sans-serif;
+    font-weight: 900;
+  }
   .stat-card--hero .stat-value {
     color: var(--text);
     font-size: clamp(78px, 9.5vw, 154px);
     letter-spacing: -0.035em;
     margin: 24px 0 12px;
   }
+  .stat-card--hero .stat-value .unit { font-size: 17px; }
   .stat-sub {
     color: var(--muted);
     font-size: 13px;
@@ -119,6 +133,7 @@
     letter-spacing: -0.02em;
     margin-bottom: 8px;
   }
+  .metric-grid .stat-value .unit { font-size: 14px; color: var(--muted); }
   .charts,
   .bottom {
     display: grid;
@@ -222,12 +237,33 @@
 </main>
 
 <script>
+// token 数字格式化:< 1w 原样;≥ 1w 显示 x.xxw;≥ 1亿 显示 x.xx亿
+// 保留 2 位小数,末尾多余的 0 去掉(1.20w → 1.2w、1.00w → 1w)
+// 边界处理:先按 w 四舍五入到 2 位小数,如果结果 ≥ 10000 再升级到亿单位,避免"9999.9999→10000w"这种奇怪显示
+function tokenParts(n) {
+  n = Number(n) || 0;
+  if (n < 1e4) return { value: String(Math.round(n)), unit: '' };
+  const roundedW = Math.round(n / 1e2) / 1e2;
+  if (roundedW < 1e4) return { value: trimZero(roundedW.toFixed(2)), unit: 'w' };
+  return { value: trimZero((n / 1e8).toFixed(2)), unit: '亿' };
+}
+function trimZero(s) { return s.replace(/\.?0+$/, ''); }
+// 纯文本(图表 y 轴刻度、tooltip)
 const fmt = n => {
-  if (n === 0) return '0 M';
-  if (n < 1e4) return '<0.01 M';
-  return (n / 1e6).toFixed(2) + ' M';
+  const p = tokenParts(n);
+  return p.unit ? `${p.value}${p.unit}` : p.value;
 };
-const fmtShort = n => (n / 1e6).toFixed(1) + 'M';
+const fmtShort = fmt;
+// 带大小字的 HTML(卡片用)
+// 三种形态:<1w → "9999 token";≥1w → "303.79 w token";≥1亿 → "2.15 亿 token"
+// 数字用大字号,单位符号(w/亿)大字号加粗但和数字之间隔一空格,"亿"再套中文字体保证粗细一致,后跟"token"小字
+const fmtRich = n => {
+  const p = tokenParts(n);
+  const num = escapeHtml(p.value);
+  if (!p.unit) return `${num}<span class="unit"> token</span>`;
+  const symbolCls = p.unit === '亿' ? 'unit-symbol unit-symbol--cn' : 'unit-symbol';
+  return `${num}<span class="unit"> <span class="${symbolCls}">${escapeHtml(p.unit)}</span> token</span>`;
+};
 const today = () => new Date().toISOString().slice(0,10);
 const thisMonthPrefix = () => new Date().toISOString().slice(0,7);
 const deviceLabel = name => name === window.AI_TOKEN_LOCAL_DEVICE ? `${name}（本机）` : name;
@@ -312,16 +348,16 @@ function renderStats(m) {
   const inPct = m.grand_total ? (m.total_input / m.grand_total * 100).toFixed(1) : 0;
   const outPct = m.grand_total ? (m.total_output / m.grand_total * 100).toFixed(1) : 0;
   const cards = [
-    { label: '总 Token', value: fmt(m.grand_total), sub: `${m.session_count} 个会话` },
-    { label: '输入 Token', value: fmt(m.total_input), sub: `占 ${inPct}% (含缓存)` },
-    { label: '输出 Token', value: fmt(m.total_output), sub: `占 ${outPct}% (含推理)` },
-    { label: '本月 Token', value: fmt(monthTokens), sub: monthPrefix },
-    { label: '今日 Token', value: fmt(todayTokens), sub: todayStr },
-    { label: '设备数', value: String(m.devices), sub: Object.keys(m.by_device).map(deviceLabel).join(' · ') },
+    { label: '历史累计总消耗', valueHTML: fmtRich(m.grand_total), sub: `${m.session_count} 个会话` },
+    { label: '输入消耗', valueHTML: fmtRich(m.total_input), sub: `占 ${inPct}% (含缓存)` },
+    { label: '输出消耗', valueHTML: fmtRich(m.total_output), sub: `占 ${outPct}% (含推理)` },
+    { label: '本月消耗', valueHTML: fmtRich(monthTokens), sub: monthPrefix },
+    { label: '今日消耗', valueHTML: fmtRich(todayTokens), sub: todayStr },
+    { label: '设备数', valueHTML: escapeHtml(String(m.devices)), sub: Object.keys(m.by_device).map(deviceLabel).join(' · ') },
   ];
   const cardMarkup = c => `
     <div class="stat-label">${escapeHtml(c.label)}</div>
-    <div class="stat-value">${escapeHtml(c.value)}</div>
+    <div class="stat-value">${c.valueHTML}</div>
     <div class="stat-sub">${escapeHtml(c.sub)}</div>
   `;
   document.getElementById('stats').innerHTML = `
@@ -330,6 +366,13 @@ function renderStats(m) {
       ${cards.slice(1).map(c => `<div class="stat-card">${cardMarkup(c)}</div>`).join('')}
     </div>
   `;
+}
+
+// 5 个 chart 实例复用同一批 canvas,重渲前必须先销毁,否则 Chart.js 会报"Canvas is already in use"
+const chartInstances = {};
+function drawChart(key, canvasId, config) {
+  if (chartInstances[key]) chartInstances[key].destroy();
+  chartInstances[key] = new Chart(document.getElementById(canvasId), config);
 }
 
 function renderByDateChart(m) {
@@ -346,7 +389,7 @@ function renderByDateChart(m) {
     pointRadius: 0,
     borderDash: ai === 'Codex' ? [8, 5] : [],
   }));
-  new Chart(document.getElementById('chartByDate'), {
+  drawChart('byDate', 'chartByDate', {
     type: 'line',
     data: { labels: dates, datasets },
     options: {
@@ -369,7 +412,7 @@ function renderByAIChart(m) {
   const labels = Object.keys(m.by_ai_io);
   const inputs = labels.map(k => m.by_ai_io[k]?.input || 0);
   const outputs = labels.map(k => m.by_ai_io[k]?.output || 0);
-  new Chart(document.getElementById('chartByAI'), {
+  drawChart('byAI', 'chartByAI', {
     type: 'bar',
     data: {
       labels,
@@ -399,7 +442,7 @@ function renderByDateIOChart(m) {
   const dates = Object.keys(m.by_date_io).sort();
   const inputs = dates.map(d => m.by_date_io[d]?.input || 0);
   const outputs = dates.map(d => m.by_date_io[d]?.output || 0);
-  new Chart(document.getElementById('chartByDateIO'), {
+  drawChart('byDateIO', 'chartByDateIO', {
     type: 'bar',
     data: {
       labels: dates,
@@ -426,7 +469,7 @@ function renderByDateIOChart(m) {
 function renderByDeviceChart(m) {
   const labels = Object.keys(m.by_device);
   const data = labels.map(k => m.by_device[k]);
-  new Chart(document.getElementById('chartByDevice'), {
+  drawChart('byDevice', 'chartByDevice', {
     type: 'bar',
     data: {
       labels: labels.map(deviceLabel),
@@ -463,13 +506,7 @@ function renderProjectList(m) {
   `).join('');
 }
 
-(async () => {
-  const devices = await loadAllDevices();
-  if (!devices || devices.length === 0) {
-    document.getElementById('subtitle').innerHTML =
-      '没找到数据。在终端跑一下 <code style="background:#1c1c18;color:#d8ff3e;padding:2px 6px">~/AI/ai-token-统计/update.sh</code>，然后刷新这个页面。';
-    return;
-  }
+function renderAll(devices) {
   const m = mergeDevices(devices);
   const lastScan = devices.map(d => d.scanned_at).sort().pop();
   const sourceLabel = window.AI_TOKEN_DATA_IS_EXAMPLE ? '虚构示例数据 · ' : '';
@@ -484,6 +521,51 @@ function renderProjectList(m) {
   renderProjectList(m);
   document.getElementById('footer').textContent =
     '只保存并同步 Token 用量，不保存或上传对话正文 · 项目名已生成伪匿名代号';
+}
+
+// 计算所有设备 scanned_at 的指纹,用来判断数据有没有变(有一台变了就整体重渲)
+function scanFingerprint(devices) {
+  return (devices || []).map(d => `${d.device}|${d.scanned_at}`).sort().join('||');
+}
+
+// 静默轮询:.app 后台跑 refresh-data.sh 时,页面每 2 秒重载一次 data.js
+// 检测到 scanned_at 变了就重渲,无任何可见提示;总共最多 30 次(60 秒),避免 scan 卡死时无限轮询
+function pollForUpdates(initialFingerprint) {
+  const MAX_ATTEMPTS = 30;
+  const INTERVAL_MS = 2000;
+  let attempts = 0;
+  let currentFingerprint = initialFingerprint;
+  const timer = setInterval(() => {
+    attempts += 1;
+    if (attempts > MAX_ATTEMPTS) { clearInterval(timer); return; }
+    // 用带时间戳的 <script> 标签重载 data.js,绕过浏览器缓存
+    const script = document.createElement('script');
+    script.src = `data.js?t=${Date.now()}`;
+    script.onload = () => {
+      script.remove();
+      const devices = window.AI_TOKEN_DATA;
+      if (!devices || devices.length === 0) return;
+      const fingerprint = scanFingerprint(devices);
+      if (fingerprint !== currentFingerprint) {
+        currentFingerprint = fingerprint;
+        renderAll(devices);
+        clearInterval(timer);
+      }
+    };
+    script.onerror = () => script.remove();
+    document.head.appendChild(script);
+  }, INTERVAL_MS);
+}
+
+(async () => {
+  const devices = await loadAllDevices();
+  if (!devices || devices.length === 0) {
+    document.getElementById('subtitle').innerHTML =
+      '没找到数据。在终端跑一下 <code style="background:#1c1c18;color:#d8ff3e;padding:2px 6px">~/AI/ai-token-统计/update.sh</code>，然后刷新这个页面。';
+    return;
+  }
+  renderAll(devices);
+  pollForUpdates(scanFingerprint(devices));
 })();
 </script>
 </body>
